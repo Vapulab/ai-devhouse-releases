@@ -1,0 +1,90 @@
+# Builds AI Devhouse from the private source repo and publishes the installers
+# as a draft release here. Run it from the Actions tab, or with:
+#   gh workflow run release.yml -R Vapulab/ai-devhouse-releases -f version=v0.1.0
+#
+# Needs one secret, SOURCE_REPO_TOKEN: a fine-grained token with read-only
+# Contents access to Vapulab/ai-devhouse.
+#
+# This repo is public, so the build must not leak the source:
+# - no build cache (a cache restored by a fork's pull request could carry the code)
+# - compiler warnings are off, because rustc prints source lines with them
+# - the source checkout keeps no credentials
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release version, e.g. v0.1.0
+        required: true
+      ref:
+        description: Branch, tag or commit of Vapulab/ai-devhouse to build
+        required: true
+        default: main
+
+permissions:
+  contents: write
+
+concurrency: release
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            args: ""
+          - platform: macos-latest
+            args: --target aarch64-apple-darwin
+          - platform: macos-latest
+            args: --target x86_64-apple-darwin
+          - platform: ubuntu-22.04
+            args: ""
+    runs-on: ${{ matrix.platform }}
+    steps:
+      - name: Check out the source
+        uses: actions/checkout@v4
+        with:
+          repository: Vapulab/ai-devhouse
+          ref: ${{ inputs.ref }}
+          token: ${{ secrets.SOURCE_REPO_TOKEN }}
+          persist-credentials: false
+
+      - name: Install Linux dependencies
+        if: matrix.platform == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build and upload the installers
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUSTFLAGS: -Awarnings
+        with:
+          tagName: ${{ inputs.version }}
+          releaseName: AI Devhouse ${{ inputs.version }}
+          releaseBody: |
+            Download the installer for your system below.
+
+            You need the [Claude Code CLI](https://docs.claude.com/en/docs/claude-code) installed and logged in.
+            The builds are not signed yet: see "First launch" in the README.
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
